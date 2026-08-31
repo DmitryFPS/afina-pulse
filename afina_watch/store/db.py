@@ -51,6 +51,42 @@ CREATE TABLE IF NOT EXISTS archives (
   bytes INTEGER,
   created_at TEXT DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS connections (
+  platform TEXT PRIMARY KEY,
+  method TEXT NOT NULL,
+  status TEXT NOT NULL,
+  label TEXT,
+  meta_json TEXT NOT NULL DEFAULT '{}',
+  error TEXT,
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS sources (
+  id TEXT PRIMARY KEY,
+  platform TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  title TEXT,
+  kind TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  meta_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS runtime_rules (
+  id TEXT PRIMARY KEY,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  keywords_json TEXT NOT NULL DEFAULT '[]',
+  phrases_json TEXT NOT NULL DEFAULT '[]',
+  semantic_threshold REAL,
+  always_llm INTEGER NOT NULL DEFAULT 0,
+  sources_json TEXT NOT NULL DEFAULT '{}',
+  actions_json TEXT NOT NULL DEFAULT '["store"]'
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 """
 
 
@@ -189,3 +225,166 @@ class Store:
         assert self._db
         cur = await self._db.execute("SELECT * FROM archives ORDER BY id DESC")
         return [dict(r) for r in await cur.fetchall()]
+
+    async def get_connection(self, platform: str) -> dict | None:
+        assert self._db
+        cur = await self._db.execute("SELECT * FROM connections WHERE platform=?", (platform,))
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def list_connections(self) -> list[dict]:
+        assert self._db
+        cur = await self._db.execute("SELECT * FROM connections")
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def upsert_connection(
+        self,
+        platform: str,
+        method: str,
+        status: str,
+        label: str | None = None,
+        meta: dict | None = None,
+        error: str | None = None,
+    ) -> dict:
+        assert self._db
+        import json
+
+        await self._db.execute(
+            """INSERT INTO connections (platform, method, status, label, meta_json, error, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(platform) DO UPDATE SET
+                 method=excluded.method,
+                 status=excluded.status,
+                 label=excluded.label,
+                 meta_json=excluded.meta_json,
+                 error=excluded.error,
+                 updated_at=excluded.updated_at
+            """,
+            (platform, method, status, label, json.dumps(meta or {}, ensure_ascii=False), error, _now()),
+        )
+        await self._db.commit()
+        row = await self.get_connection(platform)
+        assert row
+        return row
+
+    async def delete_connection(self, platform: str) -> None:
+        assert self._db
+        await self._db.execute("DELETE FROM connections WHERE platform=?", (platform,))
+        await self._db.commit()
+
+    async def list_sources(self, platform: str | None = None) -> list[dict]:
+        assert self._db
+        if platform:
+            cur = await self._db.execute(
+                "SELECT * FROM sources WHERE platform=? ORDER BY title", (platform,)
+            )
+        else:
+            cur = await self._db.execute("SELECT * FROM sources ORDER BY platform, title")
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def upsert_source(
+        self,
+        sid: str,
+        platform: str,
+        source_id: str,
+        title: str | None,
+        kind: str,
+        enabled: bool = True,
+        meta: dict | None = None,
+    ) -> None:
+        assert self._db
+        import json
+
+        await self._db.execute(
+            """INSERT INTO sources (id, platform, source_id, title, kind, enabled, meta_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                 title=excluded.title,
+                 kind=excluded.kind,
+                 enabled=excluded.enabled,
+                 meta_json=excluded.meta_json
+            """,
+            (sid, platform, source_id, title, kind, 1 if enabled else 0, json.dumps(meta or {})),
+        )
+        await self._db.commit()
+
+    async def set_source_enabled(self, sid: str, enabled: bool) -> None:
+        assert self._db
+        await self._db.execute("UPDATE sources SET enabled=? WHERE id=?", (1 if enabled else 0, sid))
+        await self._db.commit()
+
+    async def delete_source(self, sid: str) -> None:
+        assert self._db
+        await self._db.execute("DELETE FROM sources WHERE id=?", (sid,))
+        await self._db.commit()
+
+    async def list_runtime_rules(self) -> list[dict]:
+        assert self._db
+        import json
+
+        cur = await self._db.execute("SELECT * FROM runtime_rules ORDER BY id")
+        out = []
+        for r in await cur.fetchall():
+            d = dict(r)
+            d["keywords"] = json.loads(d.pop("keywords_json") or "[]")
+            d["phrases"] = json.loads(d.pop("phrases_json") or "[]")
+            d["sources"] = json.loads(d.pop("sources_json") or "{}")
+            d["actions"] = json.loads(d.pop("actions_json") or "[]")
+            d["enabled"] = bool(d["enabled"])
+            d["always_llm"] = bool(d["always_llm"])
+            out.append(d)
+        return out
+
+    async def upsert_runtime_rule(self, rule: dict) -> dict:
+        assert self._db
+        import json
+
+        rid = (rule.get("id") or "").strip()
+        if not rid:
+            raise ValueError("id обязателен")
+        await self._db.execute(
+            """INSERT INTO runtime_rules
+               (id, enabled, keywords_json, phrases_json, semantic_threshold, always_llm, sources_json, actions_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                 enabled=excluded.enabled,
+                 keywords_json=excluded.keywords_json,
+                 phrases_json=excluded.phrases_json,
+                 semantic_threshold=excluded.semantic_threshold,
+                 always_llm=excluded.always_llm,
+                 sources_json=excluded.sources_json,
+                 actions_json=excluded.actions_json
+            """,
+            (
+                rid,
+                1 if rule.get("enabled", True) else 0,
+                json.dumps(rule.get("keywords") or [], ensure_ascii=False),
+                json.dumps(rule.get("phrases") or [], ensure_ascii=False),
+                rule.get("semantic_threshold"),
+                1 if rule.get("always_llm") else 0,
+                json.dumps(rule.get("sources") or {"telegram": ["*"], "facebook": ["*"]}, ensure_ascii=False),
+                json.dumps(rule.get("actions") or ["store"], ensure_ascii=False),
+            ),
+        )
+        await self._db.commit()
+        rules = {r["id"]: r for r in await self.list_runtime_rules()}
+        return rules[rid]
+
+    async def delete_runtime_rule(self, rid: str) -> None:
+        assert self._db
+        await self._db.execute("DELETE FROM runtime_rules WHERE id=?", (rid,))
+        await self._db.commit()
+
+    async def get_setting(self, key: str) -> str | None:
+        assert self._db
+        cur = await self._db.execute("SELECT value FROM settings WHERE key=?", (key,))
+        row = await cur.fetchone()
+        return row["value"] if row else None
+
+    async def set_setting(self, key: str, value: str) -> None:
+        assert self._db
+        await self._db.execute(
+            "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
+        await self._db.commit()
