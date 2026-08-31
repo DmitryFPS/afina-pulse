@@ -45,7 +45,12 @@
           </div>
 
           <div class="method active" data-group="tg" data-method="qr">
-            <p class="hint">Как в Telegram Desktop: телефон → Настройки → Устройства → Подключить устройство.</p>
+            <p class="hint">Тот же QR, что в afina-tdl (`tdl login -T qr`): ключи Telegram Desktop, my.telegram.org не нужен.</p>
+            <details class="more">
+              <summary>Свои api_id / api_hash (необязательно)</summary>
+              <label class="field"><span>api_id</span><input class="input" id="tg-qr-api-id" inputmode="numeric" autocomplete="off" /></label>
+              <label class="field"><span>api_hash</span><input class="input" id="tg-qr-api-hash" autocomplete="off" /></label>
+            </details>
             <div class="qr-stage">
               <div class="qr-frame" id="tg-qr-frame">
                 <img id="tg-qr-img" alt="QR Telegram" />

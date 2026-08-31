@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from afina_watch.auth import facebook as fb_auth
 from afina_watch.auth import telegram as tg_auth
+from afina_watch.auth.telegram_live import QrLiveError, TelegramQrLive
 from afina_watch.config import WatchConfig
 from afina_watch.store.db import Store
 
@@ -78,6 +79,11 @@ class TelegramQrConfirmIn(BaseModel):
     password: str | None = None
 
 
+class TelegramQrStartIn(BaseModel):
+    api_id: int | None = None
+    api_hash: str | None = None
+
+
 class FacebookPasswordIn(BaseModel):
     login: str = Field(min_length=3, max_length=200)
     password: str = Field(min_length=6, max_length=200)
@@ -132,6 +138,7 @@ class SourceAddIn(BaseModel):
 def create_app(cfg: WatchConfig) -> FastAPI:
     store = Store(cfg.app.db_path)
     pending: dict[str, Any] = {}
+    qr_live = TelegramQrLive(Path(cfg.app.db_path).resolve().parent / "tg-sessions")
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -168,6 +175,11 @@ def create_app(cfg: WatchConfig) -> FastAPI:
     @app.get("/api/health")
     async def health():
         return {"ok": True, "name": "afina-watch", "version": "0.2.0"}
+
+    @app.get("/api/telegram/creds")
+    async def tg_creds():
+        saved = tg_auth.load_api_creds()
+        return {"ok": True, "configured": saved["configured"], "api_id": saved.get("api_id")}
 
     @app.get("/api/status")
     async def status():
@@ -386,71 +398,105 @@ def create_app(cfg: WatchConfig) -> FastAPI:
         )
         return {"ok": True, "next": "done", "connection": _public_conn(row)}
 
+    def _tg_api_creds(body_id: int | None, body_hash: str | None) -> tuple[int, str]:
+        try:
+            return tg_auth.resolve_api_creds(
+                body_id or pending.get("telegram", {}).get("api_id"),
+                body_hash or pending.get("telegram", {}).get("api_hash"),
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
     @app.post("/api/telegram/connect/qr/start")
-    async def tg_qr_start():
-        payload = tg_auth.make_qr_login_payload()
-        pending["telegram"] = {
-            "method": "qr",
-            "step": "scan",
-            "token": payload["token"],
-            "url": payload["url"],
-        }
+    async def tg_qr_start(body: TelegramQrStartIn | None = None):
+        body = body or TelegramQrStartIn()
+        api_id, api_hash = _tg_api_creds(body.api_id, body.api_hash)
+        try:
+            snap = await qr_live.start(api_id, api_hash)
+        except QrLiveError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(400, f"Не удалось открыть MTProto QR: {exc}") from exc
+        pending["telegram"] = {"method": "qr", "api_id": api_id, "api_hash": api_hash}
+        if snap["status"] == "connected":
+            me = snap.get("me") or {}
+            row = await store.upsert_connection(
+                "telegram", "qr", "connected",
+                label=f"{me.get('first_name') or ''} @{me.get('username') or ''}".strip(),
+                meta={"user_id": me.get("id"), "live": True},
+            )
+            return {"ok": True, "next": "done", "live": True, "qr": snap, "connection": _public_conn(row),
+                    "detail": "Сессия Telegram уже активна."}
         row = await store.upsert_connection(
-            "telegram",
-            "qr",
-            "pending_qr",
-            label="ожидание скана QR",
-            meta={"expires_in": payload["expires_in"]},
+            "telegram", "qr", "pending_qr", label="живой QR, ждём скан", meta={"live": True}
         )
         return {
             "ok": True,
             "next": "scan",
-            "qr": payload,
-            "live": False,
-            "detail": "QR показан. Официальный Telegram отклонит его, пока нет живой MTProto-сессии (api_id + Telethon или tdata/Relay). Если телефон показал ошибку — это ожидаемо.",
+            "live": True,
+            "qr": {"url": snap["url"], "expires_in": snap["expires_in"]},
+            "detail": "Это живой QR Telegram. Наведите камеру: Настройки → Устройства → Подключить устройство. Не нажимайте «я отсканировал» — вход подтверждается сам.",
             "connection": _public_conn(row),
         }
 
     @app.get("/api/telegram/connect/qr/status")
     async def tg_qr_status():
-        state = pending.get("telegram") or {}
-        row = await store.get_connection("telegram") if hasattr(store, "get_connection") else None
-        status = (row or {}).get("status") if row else state.get("step")
-        if state.get("method") != "qr" and not status:
-            return {"ok": True, "status": "idle"}
-        return {
-            "ok": True,
-            "status": state.get("step") or "scan",
-            "url": state.get("url"),
-            "token": state.get("token"),
-        }
+        snap = qr_live.snapshot()
+        if snap["status"] == "connected" and snap.get("me"):
+            me = snap["me"]
+            await store.upsert_connection(
+                "telegram", "qr", "connected",
+                label=f"{me.get('first_name') or ''} @{me.get('username') or ''}".strip(),
+                meta={"user_id": me.get("id"), "live": True},
+            )
+        elif snap["status"] == "pending_2fa":
+            await store.upsert_connection("telegram", "qr", "pending_2fa", label="QR ждёт облачный пароль")
+        elif snap["status"] == "error":
+            await store.upsert_connection("telegram", "qr", "error", label="QR ошибка", error=snap.get("error"))
+        return {"ok": True, **snap}
 
     @app.post("/api/telegram/connect/qr/confirm")
     async def tg_qr_confirm(body: TelegramQrConfirmIn):
-        state = pending.get("telegram") or {}
-        if state.get("method") != "qr":
-            raise HTTPException(400, "Сначала сгенерируйте QR Telegram")
-        pending.pop("telegram", None)
-        await store.delete_connection("telegram")
-        raise HTTPException(
-            401,
-            "Telegram отклонил QR: нет живой MTProto-сессии. "
-            "Телефон показывает ошибку авторизации — так и должно быть на синтетическом токене. "
-            "Войдите по номеру + коду или подключите tdata / Relay afina-tdl.",
-        )
+        snap = qr_live.snapshot()
+        if snap["status"] == "pending_2fa" or body.password:
+            if not body.password:
+                raise HTTPException(400, "Введите облачный пароль 2FA")
+            try:
+                snap = await qr_live.confirm_2fa(tg_auth.validate_cloud_password(body.password))
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(400, f"2FA не принят: {exc}") from exc
+        if snap["status"] == "connected":
+            me = snap.get("me") or {}
+            pending.pop("telegram", None)
+            row = await store.upsert_connection(
+                "telegram", "qr", "connected",
+                label=f"{me.get('first_name') or ''} @{me.get('username') or ''}".strip(),
+                meta={"user_id": me.get("id"), "live": True},
+            )
+            return {"ok": True, "next": "done", "live": True, "connection": _public_conn(row)}
+        if snap["status"] == "pending_qr":
+            return {
+                "ok": True,
+                "next": "scan",
+                "live": True,
+                "qr": {"url": snap.get("url")},
+                "detail": "Ещё ждём подтверждение на телефоне. Если был AUTH_TOKEN_INVALID1 — обновите QR.",
+            }
+        raise HTTPException(401, snap.get("error") or "QR не принят Telegram")
 
     @app.post("/api/telegram/connect/qr/skip-2fa")
     async def tg_qr_skip_2fa():
-        pending.pop("telegram", None)
-        await store.delete_connection("telegram")
-        raise HTTPException(
-            401,
-            "Пропустить 2FA нельзя: QR не принят Telegram. Используйте телефон или файл сессии.",
-        )
+        snap = qr_live.snapshot()
+        if snap["status"] == "connected":
+            return {"ok": True, "next": "done", "live": True}
+        if snap["status"] == "pending_2fa":
+            raise HTTPException(400, "Telegram запросил облачный пароль — его нельзя пропустить")
+        raise HTTPException(400, "Сначала дождитесь скана живого QR")
 
     @app.delete("/api/telegram/connect")
     async def tg_disconnect():
         pending.pop("telegram", None)
+        await qr_live.close()
         await store.delete_connection("telegram")
         return {"ok": True}
 

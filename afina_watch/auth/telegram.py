@@ -17,6 +17,50 @@ except ImportError:  # pragma: no cover
 
 PHONE_RE = re.compile(r"^\+[1-9]\d{6,14}$")
 BOT_TOKEN_RE = re.compile(r"^\d{5,12}:[A-Za-z0-9_-]{20,}$")
+CREDS_FILE = Path("data/tg-api.json")
+# Same credentials afina-tdl uses for `tdl login -T qr` (Telegram Desktop).
+# Source: DmitryFPS/afina-tdl pkg/tclient/app.go AppDesktop.
+DESKTOP_API_ID = 2040
+DESKTOP_API_HASH = "b18441a1ff607e10a989891a5462e627"
+
+
+def load_api_creds() -> dict[str, Any]:
+    import os
+
+    api_id = os.environ.get("TELEGRAM_API_ID") or os.environ.get("WATCH_TG_API_ID") or ""
+    api_hash = os.environ.get("TELEGRAM_API_HASH") or os.environ.get("WATCH_TG_API_HASH") or ""
+    if CREDS_FILE.exists():
+        try:
+            saved = _json.loads(CREDS_FILE.read_text(encoding="utf-8"))
+            api_id = api_id or str(saved.get("api_id") or "")
+            api_hash = api_hash or str(saved.get("api_hash") or "")
+        except Exception:
+            pass
+    if not str(api_id).isdigit() or not api_hash:
+        api_id, api_hash = DESKTOP_API_ID, DESKTOP_API_HASH
+    return {
+        "api_id": int(api_id),
+        "api_hash": api_hash,
+        "configured": True,
+        "source": "desktop" if int(api_id) == DESKTOP_API_ID else "custom",
+    }
+
+
+def save_api_creds(api_id: int, api_hash: str) -> None:
+    CREDS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    CREDS_FILE.write_text(
+        _json.dumps({"api_id": int(api_id), "api_hash": api_hash}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def resolve_api_creds(api_id: int | None = None, api_hash: str | None = None) -> tuple[int, str]:
+    saved = load_api_creds()
+    api_id = api_id or saved.get("api_id")
+    api_hash = (api_hash or saved.get("api_hash") or "").strip()
+    if not api_id or not api_hash:
+        api_id, api_hash = DESKTOP_API_ID, DESKTOP_API_HASH
+    return int(api_id), api_hash
 
 
 def normalize_phone(raw: str) -> str:

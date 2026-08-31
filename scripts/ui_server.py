@@ -5,7 +5,9 @@ Production path remains: python -m afina_watch serve
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 import sqlite3
 import sys
 import threading
@@ -21,9 +23,28 @@ sys.path.insert(0, str(ROOT))
 
 from afina_watch.auth import facebook as fb_auth  # noqa: E402
 from afina_watch.auth import telegram as tg_auth  # noqa: E402
+from afina_watch.auth.telegram_live import QrLiveError, TelegramQrLive  # noqa: E402
 
 LOCK = threading.Lock()
 PENDING: dict = {}
+QR_LIVE = TelegramQrLive(DATA / "tg-sessions")
+LOOP = asyncio.new_event_loop()
+
+
+def _loop_thread() -> None:
+    asyncio.set_event_loop(LOOP)
+    LOOP.run_forever()
+
+
+threading.Thread(target=_loop_thread, daemon=True).start()
+
+
+def run_async(coro, timeout: float = 40):
+    return asyncio.run_coroutine_threadsafe(coro, LOOP).result(timeout=timeout)
+
+
+def tg_api_creds(body: dict) -> tuple[int, str]:
+    return tg_auth.resolve_api_creds(body.get("api_id"), body.get("api_hash"))
 
 
 def db() -> sqlite3.Connection:
@@ -134,6 +155,9 @@ class Handler(SimpleHTTPRequestHandler):
             return SimpleHTTPRequestHandler.do_GET(self)
         if path == "/api/health":
             return self._json(200, {"ok": True, "name": "afina-watch", "mode": "stdlib-ui"})
+        if path == "/api/telegram/creds":
+            saved = tg_auth.load_api_creds()
+            return self._json(200, {"ok": True, "configured": saved["configured"], "api_id": saved.get("api_id")})
         if path == "/api/status":
             with LOCK, db() as conn:
                 rows = [public_conn(r) for r in conn.execute("SELECT * FROM connections")]
@@ -175,8 +199,19 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/window":
             return self._json(200, {"ok": True, "window": {"lookback_days": 7, "hot_days": 7}, "hot_items": 0, "hot_matches": 0})
         if path == "/api/telegram/connect/qr/status":
-            st = PENDING.get("telegram") or {}
-            return self._json(200, {"ok": True, "status": st.get("step") or "idle", "url": st.get("url")})
+            snap = QR_LIVE.snapshot()
+            if snap["status"] == "connected":
+                me = snap.get("me") or {}
+                self._save_conn(
+                    "telegram", "qr", "connected",
+                    f"{me.get('first_name') or ''} @{me.get('username') or ''}".strip(),
+                    {"live": True, **me},
+                )
+            elif snap["status"] == "pending_2fa":
+                self._save_conn("telegram", "qr", "pending_2fa", "QR ждёт облачный пароль")
+            elif snap["status"] == "error":
+                self._save_conn("telegram", "qr", "error", "QR ошибка", error=snap.get("error"))
+            return self._json(200, {"ok": True, **snap})
         if path == "/api/facebook/connect/qr/status":
             st = PENDING.get("facebook") or {}
             return self._json(200, {"ok": True, "status": st.get("step") or "idle", "url": st.get("url")})
@@ -186,6 +221,14 @@ class Handler(SimpleHTTPRequestHandler):
         path = urlparse(self.path).path
         if path in ("/api/telegram/connect", "/api/facebook/connect"):
             plat = "telegram" if "telegram" in path else "facebook"
+            if plat == "telegram":
+                PENDING.pop("telegram", None)
+                try:
+                    run_async(QR_LIVE.close())
+                except Exception:
+                    pass
+            else:
+                PENDING.pop("facebook", None)
             with LOCK, db() as conn:
                 conn.execute("DELETE FROM connections WHERE platform=?", (plat,))
                 conn.commit()
@@ -288,31 +331,46 @@ class Handler(SimpleHTTPRequestHandler):
             row = self._save_conn("telegram", st.get("method") or "phone", "connected", label, {"with_2fa": True})
             return self._json(200, {"ok": True, "next": "done", "connection": row})
         if path == "/api/telegram/connect/qr/start":
-            payload = tg_auth.make_qr_login_payload()
-            PENDING["telegram"] = {"method": "qr", "step": "scan", **payload}
-            row = self._save_conn("telegram", "qr", "pending_qr", "ожидание скана QR", payload)
+            api_id, api_hash = tg_api_creds(body)
+            try:
+                snap = run_async(QR_LIVE.start(api_id, api_hash))
+            except QrLiveError as exc:
+                raise ValueError(str(exc)) from exc
+            PENDING["telegram"] = {"method": "qr", "api_id": api_id, "api_hash": api_hash}
+            if snap["status"] == "connected":
+                me = snap.get("me") or {}
+                row = self._save_conn("telegram", "qr", "connected", f"{me.get('first_name') or ''} @{me.get('username') or ''}".strip(), {"live": True})
+                return self._json(200, {"ok": True, "next": "done", "live": True, "qr": snap, "connection": row})
+            row = self._save_conn("telegram", "qr", "pending_qr", "живой QR, ждём скан", {"live": True})
             return self._json(200, {
                 "ok": True,
                 "next": "scan",
-                "live": False,
-                "qr": payload,
-                "detail": "QR показан. Официальный Telegram отклонит его без живой MTProto-сессии. Если телефон показал ошибку — это ожидаемо.",
+                "live": True,
+                "qr": {"url": snap.get("url"), "expires_in": snap.get("expires_in")},
+                "detail": "Живой QR. Камера в Telegram: Настройки → Устройства → Подключить устройство. Вход подтверждается сам, кнопку «я отсканировал» жать не нужно.",
                 "connection": row,
             })
         if path == "/api/telegram/connect/qr/confirm":
-            PENDING.pop("telegram", None)
-            self._delete_conn("telegram")
-            return self._json(401, {
-                "ok": False,
-                "error": "Telegram отклонил QR: нет живой MTProto-сессии. Войдите по номеру + коду или подключите tdata / Relay.",
-            })
+            snap = QR_LIVE.snapshot()
+            if snap["status"] == "pending_2fa" or (body.get("password") or "").strip():
+                if not (body.get("password") or "").strip():
+                    raise ValueError("Введите облачный пароль 2FA")
+                snap = run_async(QR_LIVE.confirm_2fa(tg_auth.validate_cloud_password(body["password"])))
+            if snap["status"] == "connected":
+                me = snap.get("me") or {}
+                PENDING.pop("telegram", None)
+                row = self._save_conn("telegram", "qr", "connected", f"{me.get('first_name') or ''} @{me.get('username') or ''}".strip(), {"live": True})
+                return self._json(200, {"ok": True, "next": "done", "live": True, "connection": row})
+            if snap["status"] == "pending_qr":
+                return self._json(200, {"ok": True, "next": "scan", "live": True, "qr": {"url": snap.get("url")}, "detail": "Ещё ждём подтверждение на телефоне."})
+            return self._json(401, {"ok": False, "error": snap.get("error") or "QR не принят Telegram"})
         if path == "/api/telegram/connect/qr/skip-2fa":
-            PENDING.pop("telegram", None)
-            self._delete_conn("telegram")
-            return self._json(401, {
-                "ok": False,
-                "error": "Пропустить 2FA нельзя: QR не принят Telegram. Используйте телефон или файл сессии.",
-            })
+            snap = QR_LIVE.snapshot()
+            if snap["status"] == "connected":
+                return self._json(200, {"ok": True, "next": "done", "live": True})
+            if snap["status"] == "pending_2fa":
+                raise ValueError("Telegram запросил облачный пароль — его нельзя пропустить")
+            raise ValueError("Сначала дождитесь скана живого QR")
         if path == "/api/facebook/connect/password":
             login = fb_auth.validate_login(body.get("login") or "")
             fb_auth.validate_password(body.get("password") or "")

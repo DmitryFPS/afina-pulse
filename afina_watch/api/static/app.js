@@ -6,6 +6,7 @@ const state = {
   view: "dash",
   tgMethod: "qr",
   fbMethod: "password",
+  qrPoll: null,
 };
 
 function toast(msg, isErr = false) {
@@ -193,6 +194,7 @@ async function connectFacebook(method, payload, btn) {
 }
 
 async function disconnect(platform) {
+  if (platform === "telegram") stopQrPoll();
   await api(`/api/${platform}/connect`, { method: "DELETE" });
   if (platform === "telegram") {
     $("#tg-code-wrap").classList.add("hidden");
@@ -222,15 +224,64 @@ function resetQrUi(platform, message) {
   $(isTg ? "#tg-qr-2fa" : "#fb-qr-2fa")?.classList.add("hidden");
 }
 
+function stopQrPoll() {
+  if (state.qrPoll) {
+    clearInterval(state.qrPoll);
+    state.qrPoll = null;
+  }
+}
+
+async function pollTelegramQr() {
+  try {
+    const snap = await api("/api/telegram/connect/qr/status");
+    if (snap.url) {
+      paintQr("#tg-qr-img", "#tg-qr-empty", snap.url);
+    }
+    if (snap.status === "pending_qr") {
+      $("#tg-qr-status").textContent = "Ждём подтверждение в Telegram. Код обновляется сам каждые ~25 сек.";
+    } else if (snap.status === "pending_2fa") {
+      $("#tg-qr-2fa").classList.remove("hidden");
+      $("#tg-qr-status").textContent = "QR принят. Введите облачный пароль 2FA.";
+      stopQrPoll();
+    } else if (snap.status === "connected") {
+      stopQrPoll();
+      toast("Telegram подключён по QR");
+      await refreshStatus();
+      return;
+    } else if (snap.status === "error") {
+      stopQrPoll();
+      const msg = snap.error || "QR отклонён";
+      $("#tg-err").textContent = msg;
+      resetQrUi("telegram", msg);
+      toast(msg, true);
+    }
+  } catch (err) {
+    $("#tg-qr-status").textContent = err.message;
+  }
+}
+
 async function startQr(platform) {
-  const data = await api(`/api/${platform}/connect/qr/start`, { method: "POST", body: {} });
+  const payload = {};
+  if (platform === "telegram") {
+    const apiId = ($("#tg-qr-api-id")?.value || $("#tg-api-id")?.value || "").trim();
+    const apiHash = ($("#tg-qr-api-hash")?.value || $("#tg-api-hash")?.value || "").trim();
+    if (apiId) payload.api_id = Number(apiId);
+    if (apiHash) payload.api_hash = apiHash;
+  }
+  const data = await api(`/api/${platform}/connect/qr/start`, { method: "POST", body: payload });
   const url = data.qr?.url;
   const note = data.detail || "Наведите камеру на QR.";
   if (platform === "telegram") {
-    paintQr("#tg-qr-img", "#tg-qr-empty", url);
+    if (!data.live) {
+      throw new Error(data.detail || "Живой QR не создан. Укажите api_id/api_hash и установите telethon.");
+    }
+    if (url) paintQr("#tg-qr-img", "#tg-qr-empty", url);
     $("#tg-qr-status").textContent = note;
     $("#tg-qr-scanned").disabled = false;
     $("#tg-qr-2fa").classList.add("hidden");
+    stopQrPoll();
+    state.qrPoll = setInterval(pollTelegramQr, 2000);
+    await pollTelegramQr();
   } else {
     paintQr("#fb-qr-img", "#fb-qr-empty", url);
     $("#fb-qr-status").textContent = note;
@@ -618,6 +669,14 @@ window.addEventListener("DOMContentLoaded", async () => {
   if (params.get("fb") === "ok") toast("Facebook подключён через OAuth");
   if (params.get("fb") === "denied") toast("Facebook: доступ отклонён", true);
   if (params.get("fb") === "error") toast("Facebook: ошибка обмена кода", true);
+  try {
+    const creds = await api("/api/telegram/creds");
+    if (creds.api_id && $("#tg-qr-api-id") && !$("#tg-qr-api-id").value) {
+      $("#tg-qr-api-id").value = creds.api_id;
+    }
+  } catch {
+    /* optional */
+  }
   try {
     await refreshStatus();
   } catch (e) {
