@@ -110,6 +110,7 @@ def probe_session_file(path: str) -> dict[str, Any]:
     if not p.exists():
         raise FileNotFoundError(f"Файл сессии не найден: {p}")
     if p.is_dir():
+        # tdata / tdl directory
         markers = list(p.glob("**/*"))
         if not markers:
             raise FileNotFoundError(f"Каталог сессии пуст: {p}")
