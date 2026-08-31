@@ -7,3 +7,4 @@ configs/watch.yaml
 *.sqlite
 .ruff_cache/
 .pytest_cache/
+.idea
