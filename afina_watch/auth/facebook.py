@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import secrets
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -9,6 +10,10 @@ import httpx
 
 APP_ID_RE = re.compile(r"^\d{5,20}$")
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_\-|]{20,}$")
+EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
+PHONE_LOGIN_RE = re.compile(r"^\+?[0-9][0-9 \-()]{6,18}$")
+TOTP_RE = re.compile(r"^\d{6,8}$")
+RECOVERY_RE = re.compile(r"^[A-Za-z0-9]{8,14}$")
 
 GRAPH_VERSION = "v21.0"
 GRAPH = f"https://graph.facebook.com/{GRAPH_VERSION}"
@@ -28,6 +33,35 @@ def validate_app_id(app_id: str) -> str:
     if not APP_ID_RE.match(app_id):
         raise ValueError("App ID должен состоять только из цифр")
     return app_id
+
+
+def validate_login(login: str) -> str:
+    login = (login or "").strip()
+    if EMAIL_RE.match(login):
+        return login.lower()
+    compact = login.replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
+    if PHONE_LOGIN_RE.match(login) and len(re.sub(r"\D", "", compact)) >= 7:
+        return compact
+    raise ValueError("Введите email или номер телефона, привязанный к Facebook")
+
+
+def validate_password(password: str) -> str:
+    if not password or len(password) < 6:
+        raise ValueError("Пароль Facebook должен быть не короче 6 символов")
+    return password
+
+
+def validate_2fa_code(code: str) -> str:
+    code = (code or "").strip().replace(" ", "")
+    if TOTP_RE.match(code) or RECOVERY_RE.match(code):
+        return code
+    raise ValueError("Код 2FA — 6–8 цифр из приложения/SMS или резервный код")
+
+
+def make_qr_login_payload(landing: str | None = None) -> dict[str, Any]:
+    token = secrets.token_urlsafe(24)
+    url = landing or f"https://www.facebook.com/qr?token={token}"
+    return {"token": token, "url": url, "expires_in": 60}
 
 
 def validate_token(token: str) -> str:
