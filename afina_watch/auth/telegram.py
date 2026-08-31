@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import secrets
+from base64 import urlsafe_b64encode
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +37,32 @@ def validate_phone(raw: str) -> str:
             "Телефон должен быть в международном формате E.164, например +79001234567"
         )
     return phone
+
+
+def validate_login_code(code: str) -> str:
+    code = (code or "").strip().replace(" ", "").replace("-", "")
+    if not code.isdigit() or not (3 <= len(code) <= 8):
+        raise ValueError("Код Telegram должен быть из 3–8 цифр")
+    return code
+
+
+def validate_cloud_password(password: str) -> str:
+    password = password or ""
+    if len(password.strip()) < 4:
+        raise ValueError("Облачный пароль 2FA слишком короткий")
+    return password
+
+
+def make_qr_login_payload() -> dict[str, Any]:
+    """Build a Telegram-style QR login token.
+
+    Live MTProto uses auth.exportLoginToken. Without Telethon we still
+    emit a well-formed tg://login URL so the first screen can render QR.
+    """
+    raw = secrets.token_bytes(32)
+    token = urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    url = f"tg://login?token={token}"
+    return {"token": token, "url": url, "expires_in": 30}
 
 
 def validate_bot_token(token: str) -> str:
@@ -82,7 +110,6 @@ def probe_session_file(path: str) -> dict[str, Any]:
     if not p.exists():
         raise FileNotFoundError(f"Файл сессии не найден: {p}")
     if p.is_dir():
-        # tdata / tdl directory
         markers = list(p.glob("**/*"))
         if not markers:
             raise FileNotFoundError(f"Каталог сессии пуст: {p}")
