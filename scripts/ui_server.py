@@ -238,6 +238,11 @@ class Handler(SimpleHTTPRequestHandler):
             row = conn.execute("SELECT * FROM connections WHERE platform=?", (platform,)).fetchone()
         return public_conn(row)
 
+    def _delete_conn(self, platform):
+        with LOCK, db() as conn:
+            conn.execute("DELETE FROM connections WHERE platform=?", (platform,))
+            conn.commit()
+
     def _handle_post(self, path, body):
         if path == "/api/telegram/connect/relay":
             info = __import__("asyncio").run(tg_auth.probe_relay(body.get("url", "")))
@@ -289,31 +294,25 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(200, {
                 "ok": True,
                 "next": "scan",
+                "live": False,
                 "qr": payload,
-                "detail": "Откройте Telegram → Настройки → Устройства → Подключить устройство.",
+                "detail": "QR показан. Официальный Telegram отклонит его без живой MTProto-сессии. Если телефон показал ошибку — это ожидаемо.",
                 "connection": row,
             })
         if path == "/api/telegram/connect/qr/confirm":
-            st = PENDING.get("telegram") or {}
-            if st.get("method") != "qr":
-                raise ValueError("Сначала сгенерируйте QR Telegram")
-            if (body.get("password") or "").strip():
-                tg_auth.validate_cloud_password(body["password"])
-                PENDING.pop("telegram", None)
-                row = self._save_conn("telegram", "qr", "connected", "QR + 2FA", {"with_2fa": True})
-                return self._json(200, {"ok": True, "next": "done", "connection": row})
-            PENDING["telegram"]["step"] = "2fa"
-            row = self._save_conn("telegram", "qr", "pending_2fa", "QR ждёт облачный пароль")
-            return self._json(200, {
-                "ok": True,
-                "next": "2fa",
-                "detail": "Если включена двухэтапная проверка — введите облачный пароль.",
-                "connection": row,
+            PENDING.pop("telegram", None)
+            self._delete_conn("telegram")
+            return self._json(401, {
+                "ok": False,
+                "error": "Telegram отклонил QR: нет живой MTProto-сессии. Войдите по номеру + коду или подключите tdata / Relay.",
             })
         if path == "/api/telegram/connect/qr/skip-2fa":
             PENDING.pop("telegram", None)
-            row = self._save_conn("telegram", "qr", "connected", "QR-сессия")
-            return self._json(200, {"ok": True, "next": "done", "connection": row})
+            self._delete_conn("telegram")
+            return self._json(401, {
+                "ok": False,
+                "error": "Пропустить 2FA нельзя: QR не принят Telegram. Используйте телефон или файл сессии.",
+            })
         if path == "/api/facebook/connect/password":
             login = fb_auth.validate_login(body.get("login") or "")
             fb_auth.validate_password(body.get("password") or "")

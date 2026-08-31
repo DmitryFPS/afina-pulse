@@ -17,28 +17,60 @@ function toast(msg, isErr = false) {
 }
 
 async function api(path, opts = {}) {
-  const res = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
-    ...opts,
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
-  });
-  let data = {};
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs || 20000);
   try {
-    data = await res.json();
-  } catch {
-    data = { error: `HTTP ${res.status}` };
+    const res = await fetch(path, {
+      headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
+      ...opts,
+      signal: ctrl.signal,
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+    });
+    let data = {};
+    try {
+      data = await res.json();
+    } catch {
+      data = { error: `HTTP ${res.status}` };
+    }
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || data.detail || `Ошибка ${res.status}`);
+    }
+    return data;
+  } catch (err) {
+    if (err.name === "AbortError") throw new Error("Сервер не ответил за 20 секунд");
+    throw err;
+  } finally {
+    clearTimeout(timer);
   }
-  if (!res.ok || data.ok === false) {
-    throw new Error(data.error || data.detail || `Ошибка ${res.status}`);
+}
+
+function idleLabel(btn) {
+  if (!btn) return "";
+  const current = (btn.textContent || "").trim();
+  if (btn.dataset.label && btn.dataset.label !== "Проверяю…") return btn.dataset.label;
+  if (current && current !== "Проверяю…") {
+    btn.dataset.label = current;
+    return current;
   }
-  return data;
+  return btn.dataset.label || "Готово";
 }
 
 function setBusy(btn, busy) {
   if (!btn) return;
+  const label = idleLabel(btn);
+  btn.dataset.label = label;
   btn.disabled = !!busy;
-  btn.dataset.label ||= btn.textContent;
-  btn.textContent = busy ? "Проверяю…" : btn.dataset.label;
+  btn.textContent = busy ? "Проверяю…" : label;
+}
+
+function clearBusyAll() {
+  $$("button").forEach((btn) => {
+    if ((btn.textContent || "").includes("Проверяю")) setBusy(btn, false);
+    else if (btn.dataset.label) {
+      btn.disabled = false;
+      btn.textContent = btn.dataset.label;
+    }
+  });
 }
 
 function humanConn(c) {
@@ -166,28 +198,46 @@ async function disconnect(platform) {
     $("#tg-code-wrap").classList.add("hidden");
     $("#tg-2fa-wrap").classList.add("hidden");
     $("#tg-qr-2fa").classList.add("hidden");
+    resetQrUi("telegram", "QR сброшен. Можно показать новый.");
+    $("#tg-err").textContent = "";
   } else {
     $("#fb-2fa-wrap").classList.add("hidden");
     $("#fb-qr-2fa").classList.add("hidden");
+    resetQrUi("facebook", "QR сброшен. Можно показать новый.");
+    $("#fb-err").textContent = "";
   }
+  clearBusyAll();
   await refreshStatus();
+}
+
+function resetQrUi(platform, message) {
+  const isTg = platform === "telegram";
+  const startBtn = $(isTg ? "#tg-qr-start" : "#fb-qr-start");
+  const scannedBtn = $(isTg ? "#tg-qr-scanned" : "#fb-qr-scanned");
+  const statusEl = $(isTg ? "#tg-qr-status" : "#fb-qr-status");
+  setBusy(startBtn, false);
+  setBusy(scannedBtn, false);
+  if (scannedBtn) scannedBtn.disabled = true;
+  if (statusEl && message) statusEl.textContent = message;
+  $(isTg ? "#tg-qr-2fa" : "#fb-qr-2fa")?.classList.add("hidden");
 }
 
 async function startQr(platform) {
   const data = await api(`/api/${platform}/connect/qr/start`, { method: "POST", body: {} });
   const url = data.qr?.url;
+  const note = data.detail || "Наведите камеру на QR.";
   if (platform === "telegram") {
     paintQr("#tg-qr-img", "#tg-qr-empty", url);
-    $("#tg-qr-status").textContent = data.detail;
+    $("#tg-qr-status").textContent = note;
     $("#tg-qr-scanned").disabled = false;
     $("#tg-qr-2fa").classList.add("hidden");
   } else {
     paintQr("#fb-qr-img", "#fb-qr-empty", url);
-    $("#fb-qr-status").textContent = data.detail;
+    $("#fb-qr-status").textContent = note;
     $("#fb-qr-scanned").disabled = false;
     $("#fb-qr-2fa").classList.add("hidden");
   }
-  toast(data.detail);
+  toast(note);
   await refreshStatus();
   showApp(false);
   renderCatalog();
@@ -326,22 +376,39 @@ function bind() {
   $("#back-gate").addEventListener("click", () => showApp(false));
 
   $("#tg-qr-start").addEventListener("click", async (e) => {
-    setBusy(e.currentTarget, true);
-    try { await startQr("telegram"); } catch (err) { $("#tg-err").textContent = err.message; toast(err.message, true); }
-    finally { setBusy(e.currentTarget, false); }
+    const btn = e.currentTarget;
+    setBusy(btn, true);
+    try { await startQr("telegram"); }
+    catch (err) { $("#tg-err").textContent = err.message; toast(err.message, true); }
+    finally { setBusy(btn, false); }
   });
-  $("#tg-qr-scanned").addEventListener("click", async () => {
-    try { await confirmQr("telegram"); } catch (err) { toast(err.message, true); }
+  $("#tg-qr-scanned").addEventListener("click", async (e) => {
+    const btn = e.currentTarget;
+    setBusy(btn, true);
+    try { await confirmQr("telegram"); }
+    catch (err) {
+      $("#tg-err").textContent = err.message;
+      toast(err.message, true);
+      resetQrUi("telegram", err.message);
+    }
+    finally { setBusy(btn, false); }
   });
-  $("#tg-qr-2fa-go").addEventListener("click", async () => {
-    try { await confirmQr("telegram", { password: $("#tg-qr-password").value }); } catch (err) { toast(err.message, true); }
+  $("#tg-qr-2fa-go").addEventListener("click", async (e) => {
+    const btn = e.currentTarget;
+    setBusy(btn, true);
+    try { await confirmQr("telegram", { password: $("#tg-qr-password").value }); }
+    catch (err) { toast(err.message, true); }
+    finally { setBusy(btn, false); }
   });
-  $("#tg-qr-skip").addEventListener("click", async () => {
+  $("#tg-qr-skip").addEventListener("click", async (e) => {
+    const btn = e.currentTarget;
+    setBusy(btn, true);
     try {
       await api("/api/telegram/connect/qr/skip-2fa", { method: "POST", body: {} });
-      toast("Telegram подключён по QR");
+      toast("Telegram: QR без живой MTProto-сессии не подключает аккаунт");
       await refreshStatus();
     } catch (err) { toast(err.message, true); }
+    finally { setBusy(btn, false); }
   });
 
   $("#tg-phone-form").addEventListener("submit", (e) => {
@@ -359,7 +426,8 @@ function bind() {
   });
   $("#tg-2fa-form").addEventListener("submit", async (e) => {
     e.preventDefault();
-    setBusy(e.submitter, true);
+    const btn = e.submitter || $("#tg-2fa-form button[type=submit]");
+    setBusy(btn, true);
     try {
       await api("/api/telegram/connect/2fa", { method: "POST", body: { password: $("#tg-2fa").value } });
       toast("Telegram: 2FA принят");
@@ -368,7 +436,7 @@ function bind() {
       $("#tg-err").textContent = err.message;
       toast(err.message, true);
     } finally {
-      setBusy(e.submitter, false);
+      setBusy(btn, false);
     }
   });
 
@@ -381,7 +449,8 @@ function bind() {
   });
   $("#fb-2fa-form").addEventListener("submit", async (e) => {
     e.preventDefault();
-    setBusy(e.submitter, true);
+    const btn = e.submitter || $("#fb-2fa-form button[type=submit]");
+    setBusy(btn, true);
     try {
       await api("/api/facebook/connect/2fa", { method: "POST", body: { code: $("#fb-2fa").value.trim() } });
       toast("Facebook: 2FA принят");
@@ -390,27 +459,44 @@ function bind() {
       $("#fb-err").textContent = err.message;
       toast(err.message, true);
     } finally {
-      setBusy(e.submitter, false);
+      setBusy(btn, false);
     }
   });
 
   $("#fb-qr-start").addEventListener("click", async (e) => {
-    setBusy(e.currentTarget, true);
-    try { await startQr("facebook"); } catch (err) { $("#fb-err").textContent = err.message; toast(err.message, true); }
-    finally { setBusy(e.currentTarget, false); }
+    const btn = e.currentTarget;
+    setBusy(btn, true);
+    try { await startQr("facebook"); }
+    catch (err) { $("#fb-err").textContent = err.message; toast(err.message, true); }
+    finally { setBusy(btn, false); }
   });
-  $("#fb-qr-scanned").addEventListener("click", async () => {
-    try { await confirmQr("facebook"); } catch (err) { toast(err.message, true); }
+  $("#fb-qr-scanned").addEventListener("click", async (e) => {
+    const btn = e.currentTarget;
+    setBusy(btn, true);
+    try { await confirmQr("facebook"); }
+    catch (err) {
+      $("#fb-err").textContent = err.message;
+      toast(err.message, true);
+      resetQrUi("facebook", err.message);
+    }
+    finally { setBusy(btn, false); }
   });
-  $("#fb-qr-2fa-go").addEventListener("click", async () => {
-    try { await confirmQr("facebook", { code: $("#fb-qr-code").value.trim() }); } catch (err) { toast(err.message, true); }
+  $("#fb-qr-2fa-go").addEventListener("click", async (e) => {
+    const btn = e.currentTarget;
+    setBusy(btn, true);
+    try { await confirmQr("facebook", { code: $("#fb-qr-code").value.trim() }); }
+    catch (err) { toast(err.message, true); }
+    finally { setBusy(btn, false); }
   });
-  $("#fb-qr-skip").addEventListener("click", async () => {
+  $("#fb-qr-skip").addEventListener("click", async (e) => {
+    const btn = e.currentTarget;
+    setBusy(btn, true);
     try {
       await api("/api/facebook/connect/qr/skip-2fa", { method: "POST", body: {} });
-      toast("Facebook подключён по QR");
+      toast("Facebook: QR без живого OAuth не подключает аккаунт");
       await refreshStatus();
     } catch (err) { toast(err.message, true); }
+    finally { setBusy(btn, false); }
   });
 
   $("#tg-relay-form").addEventListener("submit", (e) => {
@@ -526,6 +612,7 @@ function splitList(s) {
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
+  clearBusyAll();
   bind();
   const params = new URLSearchParams(location.search);
   if (params.get("fb") === "ok") toast("Facebook подключён через OAuth");

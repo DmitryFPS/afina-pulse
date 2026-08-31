@@ -406,7 +406,8 @@ def create_app(cfg: WatchConfig) -> FastAPI:
             "ok": True,
             "next": "scan",
             "qr": payload,
-            "detail": "Откройте Telegram на телефоне → Настройки → Устройства → Подключить устройство и наведите камеру на QR.",
+            "live": False,
+            "detail": "QR показан. Официальный Telegram отклонит его, пока нет живой MTProto-сессии (api_id + Telethon или tdata/Relay). Если телефон показал ошибку — это ожидаемо.",
             "connection": _public_conn(row),
         }
 
@@ -429,32 +430,23 @@ def create_app(cfg: WatchConfig) -> FastAPI:
         state = pending.get("telegram") or {}
         if state.get("method") != "qr":
             raise HTTPException(400, "Сначала сгенерируйте QR Telegram")
-        if body.password:
-            tg_auth.validate_cloud_password(body.password)
-            pending.pop("telegram", None)
-            row = await store.upsert_connection(
-                "telegram", "qr", "connected", label="QR + 2FA", meta={"with_2fa": True}
-            )
-            return {"ok": True, "next": "done", "connection": _public_conn(row)}
-        pending["telegram"]["step"] = "2fa"
-        row = await store.upsert_connection(
-            "telegram", "qr", "pending_2fa", label="QR ждёт облачный пароль"
+        pending.pop("telegram", None)
+        await store.delete_connection("telegram")
+        raise HTTPException(
+            401,
+            "Telegram отклонил QR: нет живой MTProto-сессии. "
+            "Телефон показывает ошибку авторизации — так и должно быть на синтетическом токене. "
+            "Войдите по номеру + коду или подключите tdata / Relay afina-tdl.",
         )
-        return {
-            "ok": True,
-            "next": "2fa",
-            "detail": "Если на аккаунте включена двухэтапная проверка — введите облачный пароль. Иначе нажмите «Продолжить без пароля».",
-            "connection": _public_conn(row),
-        }
 
     @app.post("/api/telegram/connect/qr/skip-2fa")
     async def tg_qr_skip_2fa():
-        state = pending.get("telegram") or {}
-        if state.get("method") != "qr":
-            raise HTTPException(400, "Нет активного QR-входа")
         pending.pop("telegram", None)
-        row = await store.upsert_connection("telegram", "qr", "connected", label="QR-сессия")
-        return {"ok": True, "next": "done", "connection": _public_conn(row)}
+        await store.delete_connection("telegram")
+        raise HTTPException(
+            401,
+            "Пропустить 2FA нельзя: QR не принят Telegram. Используйте телефон или файл сессии.",
+        )
 
     @app.delete("/api/telegram/connect")
     async def tg_disconnect():
