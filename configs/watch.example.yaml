@@ -1,0 +1,93 @@
+app:
+  name: afina-watch
+  log_level: INFO
+  db_path: ./data/watch.sqlite
+  media_cache: ./data/media
+  workers: 2
+  window:
+    lookback_days: 7          # старше не берём
+    hot_days: 7               # столько живёт в SQLite до архива
+    archive_dir: ./data/archive
+    include_media: true
+    delete_hot_media_after_archive: false
+    auto_archive: false       # true = паковать просроченное раз в сутки
+    auto_archive_every_hours: 24
+
+telegram:
+  enabled: true
+  # kafka | mongo_tail | both
+  mode: both
+  kafka:
+    bootstrap: 127.0.0.1:9092
+    topic: relay.events
+    group_id: afina-watch
+  mongo:
+    uri: mongodb://127.0.0.1:27017
+    database: relay
+    events_collection: events
+  relay_api: http://127.0.0.1:8090
+  # пусто = все маршруты Relay
+  route_allowlist: []
+
+facebook:
+  enabled: false
+  graph:
+    api_version: v21.0
+    page_tokens: []          # [{page_id: "...", token: "..."}]
+    poll_seconds: 60
+  import_box:
+    enabled: true
+    inbox_dir: ./data/fb-inbox
+    poll_seconds: 20
+    archive: true
+  browser:
+    enabled: false
+    # контракт есть, встроенного скрейпера нет — docs/FACEBOOK.md
+    user_data_dir: ./data/fb-profile
+    poll_seconds: 180
+
+llm:
+  provider: ollama           # ollama | openai_compat
+  host: http://127.0.0.1:11434
+  text_model: qwen2.5:7b
+  vision_model: qwen2.5vl:7b
+  embed_model: bge-m3
+  # запасной путь, если Ollama embeddings нет — sentence-transformers локально
+  embed_fallback: intfloat/multilingual-e5-large
+  whisper_model: medium
+  whisper_device: auto
+  temperature: 0.1
+  max_item_chars: 8000
+
+matching:
+  default_semantic_threshold: 0.72
+  keyword_casefold: true
+  run_llm_if_semantic_above: 0.55
+  run_vlm_on_media: true
+  video_max_frames: 8
+  video_max_seconds: 180
+
+alerts:
+  telegram:
+    enabled: false
+    bot_token: ""
+    chat_id: ""
+  webhook:
+    enabled: false
+    url: ""
+  stdout: true
+
+rules:
+  - id: example-keywords
+    enabled: true
+    keywords:
+      - "пример"
+      - "afina"
+    phrases:
+      - "анонс релиза нового инструмента мониторинга"
+    semantic_threshold: 0.72
+    always_llm: false
+    sources:
+      telegram: ["*"]
+      facebook: ["*"]
+    actions: ["store", "stdout"]

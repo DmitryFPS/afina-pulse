@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+data/
+.env
+configs/watch.yaml
+*.sqlite
+.ruff_cache/
+.pytest_cache/

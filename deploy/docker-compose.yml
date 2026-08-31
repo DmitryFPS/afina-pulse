@@ -1,0 +1,18 @@
+services:
+  watch-api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: ["python", "-m", "afina_watch", "serve", "--config", "/app/configs/watch.yaml", "--host", "0.0.0.0", "--port", "8091"]
+    volumes:
+      - ../configs:/app/configs
+      - ../data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8091:8091"
+    environment:
+      WATCH_OLLAMA_HOST: http://host.docker.internal:11434
+      WATCH_KAFKA_BOOTSTRAP: host.docker.internal:9092
+      WATCH_MONGO_URI: mongodb://host.docker.internal:27017
+    restart: unless-stopped
