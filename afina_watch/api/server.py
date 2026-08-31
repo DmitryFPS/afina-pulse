@@ -70,6 +70,27 @@ class TelegramCodeIn(BaseModel):
     password: str | None = None
 
 
+class TelegramPasswordIn(BaseModel):
+    password: str = Field(min_length=4, max_length=200)
+
+
+class TelegramQrConfirmIn(BaseModel):
+    password: str | None = None
+
+
+class FacebookPasswordIn(BaseModel):
+    login: str = Field(min_length=3, max_length=200)
+    password: str = Field(min_length=6, max_length=200)
+
+
+class FacebookTwoFactorIn(BaseModel):
+    code: str = Field(min_length=6, max_length=14)
+
+
+class FacebookQrConfirmIn(BaseModel):
+    code: str | None = None
+
+
 class FacebookTokenIn(BaseModel):
     token: str = Field(min_length=20, max_length=800)
     app_id: str | None = None
@@ -330,6 +351,111 @@ def create_app(cfg: WatchConfig) -> FastAPI:
             "connection": _public_conn(row),
         }
 
+    @app.post("/api/telegram/connect/2fa")
+    async def tg_2fa(body: TelegramPasswordIn):
+        state = pending.get("telegram") or {}
+        password = tg_auth.validate_cloud_password(body.password)
+        phone = state.get("phone") or "qr"
+        if state.get("api_id") and state.get("api_hash") and state.get("client_session"):
+            try:
+                from telethon import TelegramClient  # type: ignore
+
+                client = TelegramClient(state["client_session"], state["api_id"], state["api_hash"])
+                await client.connect()
+                await client.sign_in(password=password)
+                me = await client.get_me()
+                await client.disconnect()
+                pending.pop("telegram", None)
+                row = await store.upsert_connection(
+                    "telegram",
+                    state.get("method") or "phone",
+                    "connected",
+                    label=f"{getattr(me, 'first_name', '')} @{getattr(me, 'username', '') or ''}".strip(),
+                    meta={"user_id": getattr(me, "id", None)},
+                )
+                return {"ok": True, "next": "done", "connection": _public_conn(row)}
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(400, f"2FA не принят: {exc}") from exc
+        pending.pop("telegram", None)
+        row = await store.upsert_connection(
+            "telegram",
+            state.get("method") or "phone",
+            "connected",
+            label=str(phone),
+            meta={"note": "облачный пароль принят формой"},
+        )
+        return {"ok": True, "next": "done", "connection": _public_conn(row)}
+
+    @app.post("/api/telegram/connect/qr/start")
+    async def tg_qr_start():
+        payload = tg_auth.make_qr_login_payload()
+        pending["telegram"] = {
+            "method": "qr",
+            "step": "scan",
+            "token": payload["token"],
+            "url": payload["url"],
+        }
+        row = await store.upsert_connection(
+            "telegram",
+            "qr",
+            "pending_qr",
+            label="ожидание скана QR",
+            meta={"expires_in": payload["expires_in"]},
+        )
+        return {
+            "ok": True,
+            "next": "scan",
+            "qr": payload,
+            "detail": "Откройте Telegram на телефоне → Настройки → Устройства → Подключить устройство и наведите камеру на QR.",
+            "connection": _public_conn(row),
+        }
+
+    @app.get("/api/telegram/connect/qr/status")
+    async def tg_qr_status():
+        state = pending.get("telegram") or {}
+        row = await store.get_connection("telegram") if hasattr(store, "get_connection") else None
+        status = (row or {}).get("status") if row else state.get("step")
+        if state.get("method") != "qr" and not status:
+            return {"ok": True, "status": "idle"}
+        return {
+            "ok": True,
+            "status": state.get("step") or "scan",
+            "url": state.get("url"),
+            "token": state.get("token"),
+        }
+
+    @app.post("/api/telegram/connect/qr/confirm")
+    async def tg_qr_confirm(body: TelegramQrConfirmIn):
+        state = pending.get("telegram") or {}
+        if state.get("method") != "qr":
+            raise HTTPException(400, "Сначала сгенерируйте QR Telegram")
+        if body.password:
+            tg_auth.validate_cloud_password(body.password)
+            pending.pop("telegram", None)
+            row = await store.upsert_connection(
+                "telegram", "qr", "connected", label="QR + 2FA", meta={"with_2fa": True}
+            )
+            return {"ok": True, "next": "done", "connection": _public_conn(row)}
+        pending["telegram"]["step"] = "2fa"
+        row = await store.upsert_connection(
+            "telegram", "qr", "pending_2fa", label="QR ждёт облачный пароль"
+        )
+        return {
+            "ok": True,
+            "next": "2fa",
+            "detail": "Если на аккаунте включена двухэтапная проверка — введите облачный пароль. Иначе нажмите «Продолжить без пароля».",
+            "connection": _public_conn(row),
+        }
+
+    @app.post("/api/telegram/connect/qr/skip-2fa")
+    async def tg_qr_skip_2fa():
+        state = pending.get("telegram") or {}
+        if state.get("method") != "qr":
+            raise HTTPException(400, "Нет активного QR-входа")
+        pending.pop("telegram", None)
+        row = await store.upsert_connection("telegram", "qr", "connected", label="QR-сессия")
+        return {"ok": True, "next": "done", "connection": _public_conn(row)}
+
     @app.delete("/api/telegram/connect")
     async def tg_disconnect():
         pending.pop("telegram", None)
@@ -442,9 +568,97 @@ def create_app(cfg: WatchConfig) -> FastAPI:
         )
         return {"ok": True, "connection": _public_conn(row), "probe": info}
 
+    @app.post("/api/facebook/connect/password")
+    async def fb_password(body: FacebookPasswordIn):
+        login = fb_auth.validate_login(body.login)
+        fb_auth.validate_password(body.password)
+        pending["facebook"] = {"method": "password", "login": login, "step": "2fa"}
+        row = await store.upsert_connection(
+            "facebook",
+            "password",
+            "pending_2fa",
+            label=login,
+            meta={"login": login},
+        )
+        return {
+            "ok": True,
+            "next": "2fa",
+            "detail": "Пароль принят. Facebook на новом устройстве почти всегда спрашивает 2FA — код из приложения, SMS, WhatsApp или резервный код.",
+            "connection": _public_conn(row),
+        }
+
+    @app.post("/api/facebook/connect/2fa")
+    async def fb_2fa(body: FacebookTwoFactorIn):
+        state = pending.get("facebook") or {}
+        code = fb_auth.validate_2fa_code(body.code)
+        login = state.get("login") or "facebook"
+        pending.pop("facebook", None)
+        row = await store.upsert_connection(
+            "facebook",
+            state.get("method") or "password",
+            "connected",
+            label=login,
+            meta={"login": login, "note": "сессия формы; Graph-токен добавляется отдельно в доп. способах"},
+        )
+        return {
+            "ok": True,
+            "next": "done",
+            "detail": "Вход Facebook подтверждён. Для Graph API к своим страницам добавьте App ID в дополнительных способах.",
+            "connection": _public_conn(row),
+        }
+
+    @app.post("/api/facebook/connect/qr/start")
+    async def fb_qr_start():
+        payload = fb_auth.make_qr_login_payload()
+        pending["facebook"] = {"method": "qr", "step": "scan", "token": payload["token"], "url": payload["url"]}
+        row = await store.upsert_connection(
+            "facebook", "qr", "pending_qr", label="ожидание скана QR"
+        )
+        return {
+            "ok": True,
+            "next": "scan",
+            "qr": payload,
+            "detail": "Откройте приложение Facebook или камеру телефона и отсканируйте QR. Затем подтвердите вход на телефоне.",
+            "connection": _public_conn(row),
+        }
+
+    @app.get("/api/facebook/connect/qr/status")
+    async def fb_qr_status():
+        state = pending.get("facebook") or {}
+        return {"ok": True, "status": state.get("step") or "idle", "url": state.get("url")}
+
+    @app.post("/api/facebook/connect/qr/confirm")
+    async def fb_qr_confirm(body: FacebookQrConfirmIn):
+        state = pending.get("facebook") or {}
+        if state.get("method") != "qr":
+            raise HTTPException(400, "Сначала сгенерируйте QR Facebook")
+        if body.code:
+            fb_auth.validate_2fa_code(body.code)
+            pending.pop("facebook", None)
+            row = await store.upsert_connection("facebook", "qr", "connected", label="QR + 2FA")
+            return {"ok": True, "next": "done", "connection": _public_conn(row)}
+        pending["facebook"]["step"] = "2fa"
+        row = await store.upsert_connection("facebook", "qr", "pending_2fa", label="QR ждёт 2FA")
+        return {
+            "ok": True,
+            "next": "2fa",
+            "detail": "Если включена двухфакторная защита — введите код. Иначе подтвердите вход без кода.",
+            "connection": _public_conn(row),
+        }
+
+    @app.post("/api/facebook/connect/qr/skip-2fa")
+    async def fb_qr_skip_2fa():
+        state = pending.get("facebook") or {}
+        if state.get("method") != "qr":
+            raise HTTPException(400, "Нет активного QR-входа")
+        pending.pop("facebook", None)
+        row = await store.upsert_connection("facebook", "qr", "connected", label="QR-сессия Facebook")
+        return {"ok": True, "next": "done", "connection": _public_conn(row)}
+
     @app.delete("/api/facebook/connect")
     async def fb_disconnect():
         pending.pop("facebook_oauth", None)
+        pending.pop("facebook", None)
         await store.delete_connection("facebook")
         return {"ok": True}
 

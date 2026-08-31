@@ -4,8 +4,8 @@ const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const state = {
   status: null,
   view: "dash",
-  tgMethod: "relay",
-  fbMethod: "token",
+  tgMethod: "qr",
+  fbMethod: "password",
 };
 
 function toast(msg, isErr = false) {
@@ -41,10 +41,18 @@ function setBusy(btn, busy) {
   btn.textContent = busy ? "Проверяю…" : btn.dataset.label;
 }
 
-function connDot(status) {
-  if (status === "connected") return "on";
-  if (status === "error") return "err";
-  return "off";
+function humanConn(c) {
+  if (!c || c.status === "disconnected") return "не подключено";
+  if (c.status === "pending_code") return "ждёт код из Telegram";
+  if (c.status === "pending_qr") return "ждёт сканирование QR";
+  if (c.status === "pending_2fa") return "ждёт 2FA";
+  if (c.status === "error") return c.error || "ошибка";
+  return c.label || c.method || "подключено";
+}
+
+function showApp(connected) {
+  $("#gate").classList.toggle("hidden", connected);
+  $("#shell").classList.toggle("hidden", !connected);
 }
 
 function renderStatusPills() {
@@ -58,25 +66,13 @@ function renderStatusPills() {
   if (fbLabel) fbLabel.textContent = humanConn(s.facebook);
 }
 
-function humanConn(c) {
-  if (!c || c.status === "disconnected") return "не подключено";
-  if (c.status === "pending_code") return "ждёт код";
-  if (c.status === "pending_2fa") return "ждёт 2FA";
-  if (c.status === "error") return c.error || "ошибка";
-  return c.label || c.method || "подключено";
-}
-
-function showApp(connected) {
-  $("#gate").classList.toggle("hidden", connected);
-  $("#shell").classList.toggle("hidden", !connected);
-}
-
-async function refreshStatus() {
-  state.status = await api("/api/status");
-  renderStatusPills();
-  showApp(!!state.status.connected_any);
-  if (state.status.connected_any) await refreshDashboard();
-  else renderCatalog();
+function paintQr(imgId, emptyId, url) {
+  const img = $(imgId);
+  const empty = $(emptyId);
+  if (!url) return;
+  img.src = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(url)}`;
+  img.classList.add("show");
+  if (empty) empty.style.display = "none";
 }
 
 function renderCatalog() {
@@ -84,6 +80,28 @@ function renderCatalog() {
   $("#gate-tg-state").textContent = humanConn(s.telegram);
   $("#gate-fb-state").textContent = humanConn(s.facebook);
   $("#enter-btn").disabled = !s.connected_any;
+  if (s.telegram?.status === "pending_code") $("#tg-code-wrap").classList.remove("hidden");
+  if (s.telegram?.status === "pending_2fa") {
+    $("#tg-2fa-wrap").classList.remove("hidden");
+    $("#tg-qr-2fa").classList.remove("hidden");
+  }
+  if (s.facebook?.status === "pending_2fa") {
+    $("#fb-2fa-wrap").classList.remove("hidden");
+    $("#fb-qr-2fa").classList.remove("hidden");
+  }
+}
+
+async function refreshStatus() {
+  state.status = await api("/api/status");
+  renderStatusPills();
+  const connected = !!state.status.connected_any;
+  if (connected) {
+    showApp(true);
+    await refreshDashboard();
+  } else {
+    showApp(false);
+    renderCatalog();
+  }
 }
 
 function switchMethod(group, id) {
@@ -101,6 +119,10 @@ async function connectTelegram(method, payload, btn) {
     if (data.next === "code") {
       $("#tg-code-wrap").classList.remove("hidden");
       toast(data.detail || "Введите код из Telegram");
+    } else if (data.next === "2fa") {
+      $("#tg-2fa-wrap").classList.remove("hidden");
+      $("#tg-qr-2fa").classList.remove("hidden");
+      toast(data.detail || "Введите облачный пароль 2FA");
     } else {
       toast(data.detail || "Telegram подключён");
     }
@@ -123,7 +145,12 @@ async function connectFacebook(method, payload, btn) {
       return;
     }
     const data = await api(`/api/facebook/connect/${method}`, { method: "POST", body: payload });
-    toast(data.probe?.limitation || "Facebook подключён");
+    if (data.next === "2fa") {
+      $("#fb-2fa-wrap").classList.remove("hidden");
+      toast(data.detail || "Введите код 2FA");
+    } else {
+      toast(data.detail || data.probe?.limitation || "Facebook подключён");
+    }
     await refreshStatus();
   } catch (e) {
     $("#fb-err").textContent = e.message;
@@ -135,7 +162,51 @@ async function connectFacebook(method, payload, btn) {
 
 async function disconnect(platform) {
   await api(`/api/${platform}/connect`, { method: "DELETE" });
+  if (platform === "telegram") {
+    $("#tg-code-wrap").classList.add("hidden");
+    $("#tg-2fa-wrap").classList.add("hidden");
+    $("#tg-qr-2fa").classList.add("hidden");
+  } else {
+    $("#fb-2fa-wrap").classList.add("hidden");
+    $("#fb-qr-2fa").classList.add("hidden");
+  }
   await refreshStatus();
+}
+
+async function startQr(platform) {
+  const data = await api(`/api/${platform}/connect/qr/start`, { method: "POST", body: {} });
+  const url = data.qr?.url;
+  if (platform === "telegram") {
+    paintQr("#tg-qr-img", "#tg-qr-empty", url);
+    $("#tg-qr-status").textContent = data.detail;
+    $("#tg-qr-scanned").disabled = false;
+    $("#tg-qr-2fa").classList.add("hidden");
+  } else {
+    paintQr("#fb-qr-img", "#fb-qr-empty", url);
+    $("#fb-qr-status").textContent = data.detail;
+    $("#fb-qr-scanned").disabled = false;
+    $("#fb-qr-2fa").classList.add("hidden");
+  }
+  toast(data.detail);
+  await refreshStatus();
+  showApp(false);
+  renderCatalog();
+}
+
+async function confirmQr(platform, extra = {}) {
+  const data = await api(`/api/${platform}/connect/qr/confirm`, { method: "POST", body: extra });
+  if (data.next === "2fa") {
+    if (platform === "telegram") $("#tg-qr-2fa").classList.remove("hidden");
+    else $("#fb-qr-2fa").classList.remove("hidden");
+    toast(data.detail);
+  } else {
+    toast("Вход подтверждён");
+  }
+  await refreshStatus();
+  if (data.next !== "done") {
+    showApp(false);
+    renderCatalog();
+  }
 }
 
 async function refreshDashboard() {
@@ -254,18 +325,25 @@ function bind() {
   });
   $("#back-gate").addEventListener("click", () => showApp(false));
 
-  $("#tg-relay-form").addEventListener("submit", (e) => {
-    e.preventDefault();
-    connectTelegram("relay", { url: $("#tg-relay-url").value.trim() }, e.submitter);
+  $("#tg-qr-start").addEventListener("click", async (e) => {
+    setBusy(e.currentTarget, true);
+    try { await startQr("telegram"); } catch (err) { $("#tg-err").textContent = err.message; toast(err.message, true); }
+    finally { setBusy(e.currentTarget, false); }
   });
-  $("#tg-session-form").addEventListener("submit", (e) => {
-    e.preventDefault();
-    connectTelegram("session", { path: $("#tg-session-path").value.trim() }, e.submitter);
+  $("#tg-qr-scanned").addEventListener("click", async () => {
+    try { await confirmQr("telegram"); } catch (err) { toast(err.message, true); }
   });
-  $("#tg-bot-form").addEventListener("submit", (e) => {
-    e.preventDefault();
-    connectTelegram("bot", { token: $("#tg-bot-token").value.trim() }, e.submitter);
+  $("#tg-qr-2fa-go").addEventListener("click", async () => {
+    try { await confirmQr("telegram", { password: $("#tg-qr-password").value }); } catch (err) { toast(err.message, true); }
   });
+  $("#tg-qr-skip").addEventListener("click", async () => {
+    try {
+      await api("/api/telegram/connect/qr/skip-2fa", { method: "POST", body: {} });
+      toast("Telegram подключён по QR");
+      await refreshStatus();
+    } catch (err) { toast(err.message, true); }
+  });
+
   $("#tg-phone-form").addEventListener("submit", (e) => {
     e.preventDefault();
     const apiId = $("#tg-api-id").value.trim();
@@ -277,10 +355,75 @@ function bind() {
   });
   $("#tg-code-form").addEventListener("submit", (e) => {
     e.preventDefault();
-    connectTelegram("code", {
-      code: $("#tg-code").value.trim(),
-      password: $("#tg-2fa").value.trim() || null,
+    connectTelegram("code", { code: $("#tg-code").value.trim() }, e.submitter);
+  });
+  $("#tg-2fa-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    setBusy(e.submitter, true);
+    try {
+      await api("/api/telegram/connect/2fa", { method: "POST", body: { password: $("#tg-2fa").value } });
+      toast("Telegram: 2FA принят");
+      await refreshStatus();
+    } catch (err) {
+      $("#tg-err").textContent = err.message;
+      toast(err.message, true);
+    } finally {
+      setBusy(e.submitter, false);
+    }
+  });
+
+  $("#fb-pass-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    connectFacebook("password", {
+      login: $("#fb-login").value.trim(),
+      password: $("#fb-password").value,
     }, e.submitter);
+  });
+  $("#fb-2fa-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    setBusy(e.submitter, true);
+    try {
+      await api("/api/facebook/connect/2fa", { method: "POST", body: { code: $("#fb-2fa").value.trim() } });
+      toast("Facebook: 2FA принят");
+      await refreshStatus();
+    } catch (err) {
+      $("#fb-err").textContent = err.message;
+      toast(err.message, true);
+    } finally {
+      setBusy(e.submitter, false);
+    }
+  });
+
+  $("#fb-qr-start").addEventListener("click", async (e) => {
+    setBusy(e.currentTarget, true);
+    try { await startQr("facebook"); } catch (err) { $("#fb-err").textContent = err.message; toast(err.message, true); }
+    finally { setBusy(e.currentTarget, false); }
+  });
+  $("#fb-qr-scanned").addEventListener("click", async () => {
+    try { await confirmQr("facebook"); } catch (err) { toast(err.message, true); }
+  });
+  $("#fb-qr-2fa-go").addEventListener("click", async () => {
+    try { await confirmQr("facebook", { code: $("#fb-qr-code").value.trim() }); } catch (err) { toast(err.message, true); }
+  });
+  $("#fb-qr-skip").addEventListener("click", async () => {
+    try {
+      await api("/api/facebook/connect/qr/skip-2fa", { method: "POST", body: {} });
+      toast("Facebook подключён по QR");
+      await refreshStatus();
+    } catch (err) { toast(err.message, true); }
+  });
+
+  $("#tg-relay-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    connectTelegram("relay", { url: $("#tg-relay-url").value.trim() }, e.submitter);
+  });
+  $("#tg-session-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    connectTelegram("session", { path: $("#tg-session-path").value.trim() }, e.submitter);
+  });
+  $("#tg-bot-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    connectTelegram("bot", { token: $("#tg-bot-token").value.trim() }, e.submitter);
   });
   $("#fb-token-form").addEventListener("submit", (e) => {
     e.preventDefault();

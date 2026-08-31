@@ -91,11 +91,23 @@ class Handler(SimpleHTTPRequestHandler):
     def log_message(self, fmt, *args):
         sys.stderr.write("ui %s\n" % (fmt % args))
 
+    def _cors(self):
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Cache-Control", "no-store")
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self._cors()
+        self.end_headers()
+
     def _json(self, code, payload):
         raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
+        self._cors()
         self.end_headers()
         self.wfile.write(raw)
 
@@ -113,6 +125,7 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
+            self._cors()
             self.end_headers()
             self.wfile.write(data)
             return
@@ -161,6 +174,12 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(200, {"ok": True, "items": items})
         if path == "/api/window":
             return self._json(200, {"ok": True, "window": {"lookback_days": 7, "hot_days": 7}, "hot_items": 0, "hot_matches": 0})
+        if path == "/api/telegram/connect/qr/status":
+            st = PENDING.get("telegram") or {}
+            return self._json(200, {"ok": True, "status": st.get("step") or "idle", "url": st.get("url")})
+        if path == "/api/facebook/connect/qr/status":
+            st = PENDING.get("facebook") or {}
+            return self._json(200, {"ok": True, "status": st.get("step") or "idle", "url": st.get("url")})
         return self._json(404, {"ok": False, "error": "not found"})
 
     def do_DELETE(self):
@@ -241,11 +260,104 @@ class Handler(SimpleHTTPRequestHandler):
             st = PENDING.get("telegram") or {}
             if not st.get("phone"):
                 raise ValueError("Сначала отправьте номер телефона")
-            code = str(body.get("code") or "").replace(" ", "")
-            if not code.isdigit() or not (3 <= len(code) <= 8):
-                raise ValueError("Код должен быть из 3–8 цифр")
+            code = tg_auth.validate_login_code(body.get("code") or "")
+            password = (body.get("password") or "").strip()
+            if password:
+                tg_auth.validate_cloud_password(password)
+                PENDING.pop("telegram", None)
+                row = self._save_conn("telegram", "phone", "connected", st["phone"], {"phone": st["phone"], "with_2fa": True})
+                return self._json(200, {"ok": True, "next": "done", "connection": row})
+            PENDING["telegram"]["step"] = "2fa"
+            row = self._save_conn("telegram", "phone", "pending_2fa", st["phone"], {"phone": st["phone"]})
+            return self._json(200, {
+                "ok": True,
+                "next": "2fa",
+                "detail": "На аккаунте может быть облачный пароль. Введите его, если Telegram его запросил.",
+                "connection": row,
+            })
+        if path == "/api/telegram/connect/2fa":
+            st = PENDING.get("telegram") or {}
+            tg_auth.validate_cloud_password(body.get("password") or "")
+            label = st.get("phone") or "QR"
             PENDING.pop("telegram", None)
-            row = self._save_conn("telegram", "phone", "connected", st["phone"], {"phone": st["phone"]})
+            row = self._save_conn("telegram", st.get("method") or "phone", "connected", label, {"with_2fa": True})
+            return self._json(200, {"ok": True, "next": "done", "connection": row})
+        if path == "/api/telegram/connect/qr/start":
+            payload = tg_auth.make_qr_login_payload()
+            PENDING["telegram"] = {"method": "qr", "step": "scan", **payload}
+            row = self._save_conn("telegram", "qr", "pending_qr", "ожидание скана QR", payload)
+            return self._json(200, {
+                "ok": True,
+                "next": "scan",
+                "qr": payload,
+                "detail": "Откройте Telegram → Настройки → Устройства → Подключить устройство.",
+                "connection": row,
+            })
+        if path == "/api/telegram/connect/qr/confirm":
+            st = PENDING.get("telegram") or {}
+            if st.get("method") != "qr":
+                raise ValueError("Сначала сгенерируйте QR Telegram")
+            if (body.get("password") or "").strip():
+                tg_auth.validate_cloud_password(body["password"])
+                PENDING.pop("telegram", None)
+                row = self._save_conn("telegram", "qr", "connected", "QR + 2FA", {"with_2fa": True})
+                return self._json(200, {"ok": True, "next": "done", "connection": row})
+            PENDING["telegram"]["step"] = "2fa"
+            row = self._save_conn("telegram", "qr", "pending_2fa", "QR ждёт облачный пароль")
+            return self._json(200, {
+                "ok": True,
+                "next": "2fa",
+                "detail": "Если включена двухэтапная проверка — введите облачный пароль.",
+                "connection": row,
+            })
+        if path == "/api/telegram/connect/qr/skip-2fa":
+            PENDING.pop("telegram", None)
+            row = self._save_conn("telegram", "qr", "connected", "QR-сессия")
+            return self._json(200, {"ok": True, "next": "done", "connection": row})
+        if path == "/api/facebook/connect/password":
+            login = fb_auth.validate_login(body.get("login") or "")
+            fb_auth.validate_password(body.get("password") or "")
+            PENDING["facebook"] = {"method": "password", "login": login, "step": "2fa"}
+            row = self._save_conn("facebook", "password", "pending_2fa", login, {"login": login})
+            return self._json(200, {
+                "ok": True,
+                "next": "2fa",
+                "detail": "Пароль принят. Введите код 2FA из приложения, SMS, WhatsApp или резервный код.",
+                "connection": row,
+            })
+        if path == "/api/facebook/connect/2fa":
+            st = PENDING.get("facebook") or {}
+            fb_auth.validate_2fa_code(body.get("code") or "")
+            login = st.get("login") or "facebook"
+            PENDING.pop("facebook", None)
+            row = self._save_conn("facebook", st.get("method") or "password", "connected", login, {"login": login})
+            return self._json(200, {"ok": True, "next": "done", "connection": row})
+        if path == "/api/facebook/connect/qr/start":
+            payload = fb_auth.make_qr_login_payload()
+            PENDING["facebook"] = {"method": "qr", "step": "scan", **payload}
+            row = self._save_conn("facebook", "qr", "pending_qr", "ожидание скана QR", payload)
+            return self._json(200, {
+                "ok": True,
+                "next": "scan",
+                "qr": payload,
+                "detail": "Отсканируйте QR в приложении Facebook и подтвердите вход на телефоне.",
+                "connection": row,
+            })
+        if path == "/api/facebook/connect/qr/confirm":
+            st = PENDING.get("facebook") or {}
+            if st.get("method") != "qr":
+                raise ValueError("Сначала сгенерируйте QR Facebook")
+            if body.get("code"):
+                fb_auth.validate_2fa_code(body.get("code") or "")
+                PENDING.pop("facebook", None)
+                row = self._save_conn("facebook", "qr", "connected", "QR + 2FA")
+                return self._json(200, {"ok": True, "next": "done", "connection": row})
+            PENDING["facebook"]["step"] = "2fa"
+            row = self._save_conn("facebook", "qr", "pending_2fa", "QR ждёт 2FA")
+            return self._json(200, {"ok": True, "next": "2fa", "detail": "Введите код 2FA, если Facebook его запросил.", "connection": row})
+        if path == "/api/facebook/connect/qr/skip-2fa":
+            PENDING.pop("facebook", None)
+            row = self._save_conn("facebook", "qr", "connected", "QR-сессия Facebook")
             return self._json(200, {"ok": True, "next": "done", "connection": row})
         if path == "/api/facebook/connect/import":
             info = fb_auth.probe_import_dir(body.get("path") or str(DATA / "fb-inbox"))
@@ -308,8 +420,12 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def main():
-    host, port = "127.0.0.1", 8091
+    import os
+
+    host = os.environ.get("AFINA_HOST", "0.0.0.0")
+    port = int(os.environ.get("AFINA_PORT", "8091"))
     httpd = ThreadingHTTPServer((host, port), Handler)
+    print(f"Afina Watch UI http://127.0.0.1:{port}", flush=True)
     print(f"Afina Watch UI http://{host}:{port}", flush=True)
     httpd.serve_forever()
 

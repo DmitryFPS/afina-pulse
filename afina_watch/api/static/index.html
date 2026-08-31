@@ -32,17 +32,25 @@
         <article class="login-card tg-card">
           <div class="login-card-head">
             <div class="net-mark tg">TG</div>
-            <div><h3>Telegram</h3><p id="gate-tg-state">не подключено</p></div>
+            <div>
+              <h3>Telegram</h3>
+              <p id="gate-tg-state">не подключено</p>
+            </div>
             <button class="btn danger sm" id="tg-disconnect" type="button">выйти</button>
           </div>
+
           <div class="tabs" data-group="tg">
             <button class="tab active" type="button" data-method="qr">QR-код</button>
             <button class="tab" type="button" data-method="phone">Телефон и 2FA</button>
           </div>
+
           <div class="method active" data-group="tg" data-method="qr">
             <p class="hint">Как в Telegram Desktop: телефон → Настройки → Устройства → Подключить устройство.</p>
             <div class="qr-stage">
-              <div class="qr-frame" id="tg-qr-frame"><img id="tg-qr-img" alt="QR Telegram" /><div class="qr-empty" id="tg-qr-empty">Нажмите «Показать QR»</div></div>
+              <div class="qr-frame" id="tg-qr-frame">
+                <img id="tg-qr-img" alt="QR Telegram" />
+                <div class="qr-empty" id="tg-qr-empty">Нажмите «Показать QR»</div>
+              </div>
               <div class="qr-meta">
                 <div class="qr-status" id="tg-qr-status">QR ещё не создан</div>
                 <button class="btn primary wide" id="tg-qr-start" type="button">Показать QR</button>
@@ -51,31 +59,44 @@
             </div>
             <div id="tg-qr-2fa" class="hidden step-box">
               <p class="hint">Telegram запросил облачный пароль двухэтапной проверки.</p>
-              <label class="field"><span>Облачный пароль 2FA</span><input class="input" id="tg-qr-password" type="password" autocomplete="current-password" /></label>
+              <label class="field"><span>Облачный пароль 2FA</span>
+                <input class="input" id="tg-qr-password" type="password" autocomplete="current-password" />
+              </label>
               <div class="btn-row">
                 <button class="btn primary" id="tg-qr-2fa-go" type="button">Подтвердить пароль</button>
                 <button class="btn ghost" id="tg-qr-skip" type="button">2FA не включена</button>
               </div>
             </div>
           </div>
+
           <form id="tg-phone-form" class="method" data-group="tg" data-method="phone">
-            <p class="hint">Официальный вход MTProto. Сначала номер, потом код, потом облачный пароль если он включён.</p>
-            <label class="field"><span>Номер телефона</span><input class="input" id="tg-phone" placeholder="+79001234567" autocomplete="tel" required /></label>
-            <details class="more"><summary>api_id и api_hash с my.telegram.org</summary>
+            <p class="hint">Официальный вход MTProto. Логина-пароля у Telegram нет: сначала номер, потом код, потом облачный пароль если он включён.</p>
+            <label class="field"><span>Номер телефона</span>
+              <input class="input" id="tg-phone" placeholder="+79001234567" autocomplete="tel" required />
+            </label>
+            <details class="more">
+              <summary>api_id и api_hash с my.telegram.org</summary>
               <label class="field"><span>api_id</span><input class="input" id="tg-api-id" inputmode="numeric" /></label>
               <label class="field"><span>api_hash</span><input class="input" id="tg-api-hash" /></label>
             </details>
             <button class="btn primary wide" type="submit">Получить код</button>
           </form>
+
           <div id="tg-code-wrap" class="hidden step-box">
             <form id="tg-code-form">
-              <label class="field"><span>Код из приложения или SMS</span><input class="input" id="tg-code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" /></label>
+              <label class="field"><span>Код из приложения или SMS</span>
+                <input class="input" id="tg-code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" />
+              </label>
               <button class="btn primary wide" type="submit">Подтвердить код</button>
             </form>
           </div>
+
           <div id="tg-2fa-wrap" class="hidden step-box">
             <form id="tg-2fa-form">
-              <label class="field"><span>Облачный пароль 2FA</span><input class="input" id="tg-2fa" type="password" autocomplete="current-password" /></label>
+              <p class="hint">На аккаунте включена двухэтапная проверка. Это облачный пароль из Settings → Privacy → Two-Step Verification.</p>
+              <label class="field"><span>Облачный пароль 2FA</span>
+                <input class="input" id="tg-2fa" type="password" autocomplete="current-password" />
+              </label>
               <button class="btn primary wide" type="submit">Войти</button>
             </form>
           </div>
@@ -85,29 +106,46 @@
         <article class="login-card fb-card">
           <div class="login-card-head">
             <div class="net-mark fb">f</div>
-            <div><h3>Facebook</h3><p id="gate-fb-state">не подключено</p></div>
+            <div>
+              <h3>Facebook</h3>
+              <p id="gate-fb-state">не подключено</p>
+            </div>
             <button class="btn danger sm" id="fb-disconnect" type="button">выйти</button>
           </div>
+
           <div class="tabs" data-group="fb">
             <button class="tab active" type="button" data-method="password">Логин и пароль</button>
             <button class="tab" type="button" data-method="qr">QR-код</button>
           </div>
+
           <form id="fb-pass-form" class="method active" data-group="fb" data-method="password">
-            <p class="hint">Email или телефон и пароль. Если включена 2FA — следующим шагом код.</p>
-            <label class="field"><span>Email или телефон</span><input class="input" id="fb-login" placeholder="name@mail.com или +7900…" autocomplete="username" required /></label>
-            <label class="field"><span>Пароль</span><input class="input" id="fb-password" type="password" autocomplete="current-password" required /></label>
+            <p class="hint">Как на facebook.com: email или телефон и пароль. Если включена 2FA — следующим шагом код.</p>
+            <label class="field"><span>Email или телефон</span>
+              <input class="input" id="fb-login" placeholder="name@mail.com или +7900…" autocomplete="username" required />
+            </label>
+            <label class="field"><span>Пароль</span>
+              <input class="input" id="fb-password" type="password" autocomplete="current-password" required />
+            </label>
             <button class="btn primary wide fb-btn" type="submit">Войти</button>
           </form>
+
           <div id="fb-2fa-wrap" class="hidden step-box">
             <form id="fb-2fa-form">
-              <label class="field"><span>Код двухфакторной защиты</span><input class="input" id="fb-2fa" inputmode="numeric" autocomplete="one-time-code" maxlength="14" /></label>
+              <p class="hint">Код из приложения-аутентификатора, SMS, WhatsApp или одноразовый резервный код.</p>
+              <label class="field"><span>Код двухфакторной защиты</span>
+                <input class="input" id="fb-2fa" inputmode="numeric" autocomplete="one-time-code" maxlength="14" />
+              </label>
               <button class="btn primary wide fb-btn" type="submit">Подтвердить 2FA</button>
             </form>
           </div>
+
           <div class="method" data-group="fb" data-method="qr">
-            <p class="hint">QR входа Meta: отсканируйте в приложении Facebook.</p>
+            <p class="hint">QR входа Meta: отсканируйте камерой телефона в приложении Facebook и подтвердите устройство.</p>
             <div class="qr-stage">
-              <div class="qr-frame" id="fb-qr-frame"><img id="fb-qr-img" alt="QR Facebook" /><div class="qr-empty" id="fb-qr-empty">Нажмите «Показать QR»</div></div>
+              <div class="qr-frame" id="fb-qr-frame">
+                <img id="fb-qr-img" alt="QR Facebook" />
+                <div class="qr-empty" id="fb-qr-empty">Нажмите «Показать QR»</div>
+              </div>
               <div class="qr-meta">
                 <div class="qr-status" id="fb-qr-status">QR ещё не создан</div>
                 <button class="btn primary wide fb-btn" id="fb-qr-start" type="button">Показать QR</button>
@@ -115,7 +153,9 @@
               </div>
             </div>
             <div id="fb-qr-2fa" class="hidden step-box">
-              <label class="field"><span>Код 2FA</span><input class="input" id="fb-qr-code" inputmode="numeric" autocomplete="one-time-code" /></label>
+              <label class="field"><span>Код 2FA, если Facebook его запросил</span>
+                <input class="input" id="fb-qr-code" inputmode="numeric" autocomplete="one-time-code" />
+              </label>
               <div class="btn-row">
                 <button class="btn primary fb-btn" id="fb-qr-2fa-go" type="button">Подтвердить код</button>
                 <button class="btn ghost" id="fb-qr-skip" type="button">2FA не включена</button>
@@ -130,19 +170,41 @@
         <summary>Дополнительные способы (сессия, бот, Graph token, OAuth, inbox)</summary>
         <div class="grid-2" style="margin-top:14px">
           <div>
-            <form id="tg-relay-form" class="stack"><label class="field"><span>Relay afina-tdl</span><input class="input" id="tg-relay-url" value="http://127.0.0.1:8090" /></label><button class="btn wide" type="submit">Проверить Relay</button></form>
-            <form id="tg-session-form" class="stack"><label class="field"><span>Файл .session / tdata</span><input class="input" id="tg-session-path" placeholder="/path/to/tdata" /></label><button class="btn wide" type="submit">Привязать сессию</button></form>
-            <form id="tg-bot-form" class="stack"><label class="field"><span>Токен бота</span><input class="input" id="tg-bot-token" /></label><button class="btn wide" type="submit">Проверить бота</button></form>
+            <form id="tg-relay-form" class="stack">
+              <label class="field"><span>Relay afina-tdl</span><input class="input" id="tg-relay-url" value="http://127.0.0.1:8090" /></label>
+              <button class="btn wide" type="submit">Проверить Relay</button>
+            </form>
+            <form id="tg-session-form" class="stack">
+              <label class="field"><span>Файл .session / tdata</span><input class="input" id="tg-session-path" placeholder="/path/to/tdata" /></label>
+              <button class="btn wide" type="submit">Привязать сессию</button>
+            </form>
+            <form id="tg-bot-form" class="stack">
+              <label class="field"><span>Токен бота</span><input class="input" id="tg-bot-token" /></label>
+              <button class="btn wide" type="submit">Проверить бота</button>
+            </form>
           </div>
           <div>
-            <form id="fb-token-form" class="stack"><label class="field"><span>Graph access token</span><input class="input" id="fb-token" /></label><label class="field"><span>App ID</span><input class="input" id="fb-app-id" /></label><label class="field"><span>App Secret</span><input class="input" id="fb-app-secret" type="password" /></label><button class="btn wide" type="submit">Проверить токен</button></form>
-            <form id="fb-oauth-form" class="stack"><label class="field"><span>OAuth App ID</span><input class="input" id="fb-oauth-id" /></label><label class="field"><span>OAuth App Secret</span><input class="input" id="fb-oauth-secret" type="password" /></label><button class="btn wide" type="submit">Открыть Facebook Login</button></form>
-            <form id="fb-import-form" class="stack"><label class="field"><span>Каталог JSON inbox</span><input class="input" id="fb-import-path" value="./data/fb-inbox" /></label><button class="btn wide" type="submit">Подключить inbox</button></form>
+            <form id="fb-token-form" class="stack">
+              <label class="field"><span>Graph access token</span><input class="input" id="fb-token" /></label>
+              <label class="field"><span>App ID</span><input class="input" id="fb-app-id" /></label>
+              <label class="field"><span>App Secret</span><input class="input" id="fb-app-secret" type="password" /></label>
+              <button class="btn wide" type="submit">Проверить токен</button>
+            </form>
+            <form id="fb-oauth-form" class="stack">
+              <label class="field"><span>OAuth App ID</span><input class="input" id="fb-oauth-id" /></label>
+              <label class="field"><span>OAuth App Secret</span><input class="input" id="fb-oauth-secret" type="password" /></label>
+              <button class="btn wide" type="submit">Открыть Facebook Login</button>
+            </form>
+            <form id="fb-import-form" class="stack">
+              <label class="field"><span>Каталог JSON inbox</span><input class="input" id="fb-import-path" value="./data/fb-inbox" /></label>
+              <button class="btn wide" type="submit">Подключить inbox</button>
+            </form>
           </div>
         </div>
       </details>
+
       <footer class="gate-foot">
-        <p class="hint">Пароль Facebook в базу не пишется. Для своих Page нужен OAuth.</p>
+        <p class="hint">Пароль Facebook в базу не пишется. Живой Graph к чужой ленте официально недоступен — для своих Page нужен OAuth.</p>
         <button class="btn primary lg" id="enter-btn" type="button" disabled>Открыть панель</button>
       </footer>
     </div>
@@ -150,7 +212,10 @@
 
   <div id="shell" class="app-shell hidden">
     <aside class="side">
-      <div class="brand"><div class="logo">W</div><div><h1>AFINA WATCH</h1><small>7 дней · локальный LLM</small></div></div>
+      <div class="brand">
+        <div class="logo">W</div>
+        <div><h1>AFINA WATCH</h1><small>7 дней · локальный LLM</small></div>
+      </div>
       <button class="nav-btn active" data-view="dash" type="button">Обзор</button>
       <button class="nav-btn" data-view="feed" type="button">Совпадения</button>
       <button class="nav-btn" data-view="sources" type="button">Источники</button>
@@ -165,7 +230,12 @@
     </aside>
     <main>
       <section class="page" id="page-dash">
-        <div class="top"><div><h2>Обзор окна</h2><p>Горячие данные живут <span id="stat-window">7 дней</span>, затем упаковываются в zip.</p></div></div>
+        <div class="top">
+          <div>
+            <h2>Обзор окна</h2>
+            <p>Горячие данные живут <span id="stat-window">7 дней</span>, затем упаковываются в zip.</p>
+          </div>
+        </div>
         <div class="grid-4">
           <div class="card"><div class="k">События</div><div class="v" id="stat-items">0</div><div class="s">в горячем окне</div></div>
           <div class="card"><div class="k">Совпадения</div><div class="v" id="stat-matches">0</div><div class="s">ключевые + смысловые</div></div>
@@ -175,11 +245,19 @@
         <h3 style="margin:8px 0 12px">Последние совпадения</h3>
         <div id="feed-list"></div>
       </section>
-      <section class="page hidden" id="page-feed"><div class="top"><div><h2>Совпадения</h2><p>То, что прошло keywords / эмбеддинг / LLM.</p></div></div><div id="feed-full"></div></section>
-      <section class="page hidden" id="page-sources"><div class="top"><div><h2>Источники</h2><p>Каналы, группы, страницы и inbox-потоки.</p></div></div>
+
+      <section class="page hidden" id="page-feed">
+        <div class="top"><div><h2>Совпадения</h2><p>То, что прошло keywords / эмбеддинг / LLM.</p></div></div>
+        <div id="feed-full"></div>
+      </section>
+
+      <section class="page hidden" id="page-sources">
+        <div class="top"><div><h2>Источники</h2><p>Каналы, группы, страницы и inbox-потоки.</p></div></div>
         <form id="source-form" class="card" style="margin-bottom:14px">
           <div class="grid-2">
-            <label class="field"><span>Платформа</span><select class="input" id="src-platform"><option value="telegram">telegram</option><option value="facebook">facebook</option></select></label>
+            <label class="field"><span>Платформа</span>
+              <select class="input" id="src-platform"><option value="telegram">telegram</option><option value="facebook">facebook</option></select>
+            </label>
             <label class="field"><span>Тип</span><input class="input" id="src-kind" value="channel" /></label>
             <label class="field"><span>ID / username</span><input class="input" id="src-id" required /></label>
             <label class="field"><span>Название</span><input class="input" id="src-title" /></label>
@@ -188,25 +266,32 @@
         </form>
         <div id="sources-list"></div>
       </section>
-      <section class="page hidden" id="page-rules"><div class="top"><div><h2>Правила</h2><p>Ключевые слова и смысловые фразы.</p></div></div>
+
+      <section class="page hidden" id="page-rules">
+        <div class="top"><div><h2>Правила</h2><p>Ключевые слова и смысловые фразы.</p></div></div>
         <form id="rule-form" class="card" style="margin-bottom:14px">
           <label class="field"><span>id</span><input class="input" id="rule-id" required placeholder="sanctions-talk" /></label>
           <label class="field"><span>keywords через запятую</span><input class="input" id="rule-kw" /></label>
           <label class="field"><span>смысловые фразы через запятую</span><input class="input" id="rule-ph" /></label>
           <div class="grid-2">
             <label class="field"><span>порог семантики</span><input class="input" id="rule-th" value="0.72" /></label>
-            <label class="field" style="display:flex;align-items:flex-end;gap:8px"><input type="checkbox" id="rule-llm" /> <span>всегда гонять LLM</span></label>
+            <label class="field" style="display:flex;align-items:flex-end;gap:8px">
+              <input type="checkbox" id="rule-llm" /> <span>всегда гонять LLM</span>
+            </label>
           </div>
           <button class="btn primary" type="submit">Сохранить правило</button>
         </form>
         <div id="rules-list"></div>
       </section>
+
       <section class="page hidden" id="page-archives">
-        <div class="top"><div><h2>Архивы</h2><p>Упаковка горячего окна: JSONL + медиа + манифест.</p></div>
+        <div class="top">
+          <div><h2>Архивы</h2><p>Упаковка горячего окна: JSONL + медиа + манифест.</p></div>
           <button class="btn" id="archive-close" type="button">Закрыть текущее окно</button>
         </div>
         <div id="archives-list"></div>
       </section>
+
       <section class="page hidden" id="page-settings">
         <div class="top"><div><h2>Подключения</h2><p>Секреты в интерфейс не возвращаются.</p></div></div>
         <p class="hint">Чтобы сменить метод входа, нажмите «Изменить вход» внизу меню.</p>
